@@ -254,7 +254,7 @@ def delete_models(mr, name):
         model.delete()
         print(f"Deleted model {model.name}/{model.version}")
 
-def delete_secrets(proj, name):
+def delete_secrets(proj, name, secrets_api=None):
     secrets = secrets_api(proj.name)
     try:
         secret = secrets.get_secret(name)
@@ -287,14 +287,76 @@ def check_file_path(file_path):
     else:
         print(f"File successfully found at the path: {file_path}")
 
+
 def backfill_predictions_for_monitoring(weather_fg, air_quality_df, monitor_fg, model):
+    import pandas as pd
+
+    # 读取天气数据
     features_df = weather_fg.read()
     features_df = features_df.sort_values(by=['date'], ascending=True)
     features_df = features_df.tail(10)
-    features_df['predicted_pm25'] = model.predict(features_df[['temperature_2m_mean', 'precipitation_sum', 'wind_speed_10m_max', 'wind_direction_10m_dominant']])
-    df = pd.merge(features_df, air_quality_df[['date','pm25','street','country']], on="date")
+
+    # 从 air_quality_df 获取最近的3个PM2.5值作为初始滞后特征
+    recent_pm25 = air_quality_df.sort_values('date', ascending=False)['pm25'].head(3).tolist()
+
+    # 如果历史数据不足3条，用默认值填充
+    while len(recent_pm25) < 3:
+        recent_pm25.append(0.0)
+
+    # 初始化滞后列和预测列
+    features_df['pm25_lag1'] = 0.0
+    features_df['pm25_lag2'] = 0.0
+    features_df['pm25_lag3'] = 0.0
+    features_df['predicted_pm25'] = 0.0
+
+    # 重置索引以便逐行操作
+    features_df = features_df.reset_index(drop=True)
+
+    # 定义特征列（必须与训练时的顺序一致）
+    feature_cols = ['pm25_lag1', 'pm25_lag2', 'pm25_lag3',
+                    'temperature_2m_mean', 'precipitation_sum',
+                    'wind_speed_10m_max', 'wind_direction_10m_dominant']
+
+    # 逐行预测，使用之前的预测值作为滞后特征
+    for idx in range(len(features_df)):
+        # 设置滞后特征
+        if idx == 0:
+            # 第一行：使用历史数据
+            features_df.at[idx, 'pm25_lag1'] = recent_pm25[0]
+            features_df.at[idx, 'pm25_lag2'] = recent_pm25[1]
+            features_df.at[idx, 'pm25_lag3'] = recent_pm25[2]
+        elif idx == 1:
+            # 第二行：lag1用前一次预测，lag2/lag3用历史
+            features_df.at[idx, 'pm25_lag1'] = features_df.at[idx - 1, 'predicted_pm25']
+            features_df.at[idx, 'pm25_lag2'] = recent_pm25[0]
+            features_df.at[idx, 'pm25_lag3'] = recent_pm25[1]
+        elif idx == 2:
+            # 第三行：lag1/lag2用前两次预测，lag3用历史
+            features_df.at[idx, 'pm25_lag1'] = features_df.at[idx - 1, 'predicted_pm25']
+            features_df.at[idx, 'pm25_lag2'] = features_df.at[idx - 2, 'predicted_pm25']
+            features_df.at[idx, 'pm25_lag3'] = recent_pm25[0]
+        else:
+            # 后续行：全部使用之前的预测值
+            features_df.at[idx, 'pm25_lag1'] = features_df.at[idx - 1, 'predicted_pm25']
+            features_df.at[idx, 'pm25_lag2'] = features_df.at[idx - 2, 'predicted_pm25']
+            features_df.at[idx, 'pm25_lag3'] = features_df.at[idx - 3, 'predicted_pm25']
+
+        # 提取当前行的特征进行预测
+        X = features_df.iloc[[idx]][feature_cols]
+
+        # 预测并保存结果
+        prediction = model.predict(X)
+        features_df.at[idx, 'predicted_pm25'] = prediction[0]
+
+    # 合并预测结果和实际PM2.5数据
+    df = pd.merge(features_df, air_quality_df[['date', 'pm25', 'street', 'country']], on="date")
     df['days_before_forecast_day'] = 1
     hindcast_df = df
+
+    # 删除pm25列
     df = df.drop('pm25', axis=1)
+
+    # 插入监控特征组
     monitor_fg.insert(df, write_options={"wait_for_job": True})
+
     return hindcast_df

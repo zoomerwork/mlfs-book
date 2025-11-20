@@ -12,6 +12,6 @@ powered by a [function-calling LLM](https://www.hopsworks.ai/dictionary/function
 
 # Model Performance Monitoring
 
-1-Day Hindcast: Predictions vs Outcomes
+10-Day Hindcast: Predictions vs Outcomes
 
 ![Hindcast](./assets/img/pm25_hindcast_1day.png)

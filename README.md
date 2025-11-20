@@ -37,7 +37,7 @@ And in new model, the most important feature is lag1 data.
 
 ## Model Hindcast results::
 
-![Hindcast results](pm25_hindcast_1day.png)
+![Hindcast results](./docs/air-quality/assets/img/pm25_hindcast_1day.png)
 
 
 ## Tutorial Instructions
